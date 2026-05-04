@@ -225,13 +225,13 @@ function buildAtCompletionValue(path) {
 
 function createFffMentionProvider(getItems) {
   return {
-    async getSuggestions(lines, cursorLine, cursorCol, options) {
+    getSuggestions(lines, cursorLine, cursorCol, options) {
       try {
         const currentLine = lines?.[cursorLine] || ''
         const prefix = extractAtPrefix(currentLine.slice(0, cursorCol))
         if (!prefix || options?.signal?.aborted) return null
         const query = prefix.startsWith('@"') ? prefix.slice(2) : prefix.slice(1)
-        const items = await getItems(query, options.signal)
+        const items = getItems(query, options.signal)
         return options.signal.aborted || !items?.length ? null : { items, prefix }
       } catch {
         return null
@@ -368,10 +368,11 @@ export default async function fffExtension(pi) {
     }
   }
 
-  async function getMentionItems(query, signal) {
+  function getMentionItems(query, signal) {
     try {
       if (signal?.aborted) return []
-      const f = await ensureFinder(activeCwd).catch(() => null)
+      // Use cached finder directly; session_start ensures it's ready.
+      const f = finder && !finder.isDestroyed ? finder : null
       if (!f || signal?.aborted) return []
       const result = f.mixedSearch(query, { pageSize: MENTION_MAX_RESULTS })
       if (!result?.ok) return []
@@ -393,9 +394,9 @@ export default async function fffExtension(pi) {
       this.baseProvider = provider
       const mentionProvider = createFffMentionProvider(getMentionItems)
       const compositeProvider = {
-        getSuggestions: async (lines, cursorLine, cursorCol, options) => {
+        getSuggestions: (lines, cursorLine, cursorCol, options) => {
           try {
-            const r = await mentionProvider.getSuggestions(lines, cursorLine, cursorCol, options)
+            const r = mentionProvider.getSuggestions(lines, cursorLine, cursorCol, options)
             if (r) return r
             return this.baseProvider?.getSuggestions?.(lines, cursorLine, cursorCol, options) ?? null
           } catch { return null }
