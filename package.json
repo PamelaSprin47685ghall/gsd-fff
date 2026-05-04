@@ -1,0 +1,41 @@
+{
+  "name": "gsd-fff",
+  "version": "5.1.0",
+  "description": "FFF-powered fuzzy file and content search extension for pi — overrides built-in grep/find with frecency-ranked, git-aware tools and @-mention editor autocomplete.",
+  "type": "module",
+  "exports": "./index.js",
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "prepare": "husky"
+  },
+  "keywords": [
+    "pi-package",
+    "gsd-extension",
+    "fff",
+    "search",
+    "grep",
+    "fuzzy-search",
+    "ai-agent"
+  ],
+  "gsd": {
+    "extension": true
+  },
+  "pi": {
+    "extensions": [
+      "./index.js"
+    ]
+  },
+  "dependencies": {
+    "@ff-labs/fff-node": "^0.7.0"
+  },
+  "lint-staged": {
+    "**/*.{js,json,md}": [
+      "prettier --write"
+    ]
+  },
+  "devDependencies": {
+    "husky": "^9.1.7",
+    "lint-staged": "^16.4.0",
+    "prettier": "^3.8.3"
+  }
+}

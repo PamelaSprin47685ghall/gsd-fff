@@ -1,0 +1,18 @@
+{
+  "id": "fff",
+  "name": "FFF",
+  "version": "5.1.0",
+  "description": "FFF-powered fuzzy file and content search — replaces built-in grep/find with frecency-ranked, git-aware tools and @-mention editor autocomplete.",
+  "tier": "community",
+  "requires": {
+    "platform": ">=2.29.0"
+  },
+  "provides": {
+    "tools": ["ffgrep", "fffind"],
+    "commands": ["fff-mode", "fff-health", "fff-rescan"],
+    "hooks": [
+      "session_start",
+      "session_shutdown"
+    ]
+  }
+}
