@@ -313,7 +313,7 @@ export default async function fffExtension(pi) {
   let currentMode =
     pi.getFlag?.('fff-mode') ??
     process.env.PI_FFF_MODE ??
-    'tools-and-ui'
+    'override'
 
   const toolNames = resolveToolNames(currentMode)
 
@@ -427,7 +427,7 @@ export default async function fffExtension(pi) {
 
   // --- Flags ---
 
-  try { pi.registerFlag?.('fff-mode', { description: 'FFF mode: tools-and-ui | tools-only | override', type: 'string' }) } catch {}
+  try { pi.registerFlag?.('fff-mode', { description: 'FFF mode: tools-and-ui | tools-only | override (default: override)', type: 'string' }) } catch {}
   try { pi.registerFlag?.('fff-frecency-db', { description: 'Path to the frecency database (overrides FFF_FRECENCY_DB env)', type: 'string' }) } catch {}
   try { pi.registerFlag?.('fff-history-db', { description: 'Path to the query history database (overrides FFF_HISTORY_DB env)', type: 'string' }) } catch {}
 
