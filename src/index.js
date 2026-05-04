@@ -5,13 +5,40 @@
  * @-mention autocomplete suggestions in the interactive editor.
  *
  * SAFETY: Every handler is wrapped in try-catch. renderCall/renderResult
- * handle missing `context` gracefully. The extension NEVER crashes pi.
+ * handle missing `context` gracefully. Host deps are lazy-loaded so the
+ * extension NEVER crashes pi during module initialization.
  */
 
-import { CustomEditor } from '@gsd/pi-coding-agent'
-import { Text } from '@gsd/pi-tui'
-import { Type } from '@sinclair/typebox'
 import { buildQuery } from './query.js'
+
+// ---------------------------------------------------------------------------
+// Lazy-loaded host dependencies — static imports would crash when packages
+// are absent (tests, partial installs, or future gsd refactors).
+// ---------------------------------------------------------------------------
+
+let _hostDeps = null
+let _hostDepsPromise = null
+
+async function loadHostDeps() {
+  if (_hostDeps) return _hostDeps
+  if (_hostDepsPromise) return _hostDepsPromise
+
+  _hostDepsPromise = (async () => {
+    const [codingAgent, tui, typebox] = await Promise.all([
+      import('@gsd/pi-coding-agent').catch(() => ({})),
+      import('@gsd/pi-tui').catch(() => ({})),
+      import('@sinclair/typebox').catch(() => ({})),
+    ])
+    _hostDeps = {
+      CustomEditor: codingAgent.CustomEditor,
+      Text: tui.Text,
+      Type: typebox.Type,
+    }
+    return _hostDeps
+  })()
+
+  return _hostDepsPromise
+}
 
 // ---------------------------------------------------------------------------
 // Module-level fff-node lazy loader
@@ -234,7 +261,8 @@ function createFffMentionProvider(getItems) {
 // ---------------------------------------------------------------------------
 
 function safeText(theme, context) {
-  return context?.lastComponent ?? new Text('', 0, 0)
+  if (TextClass) return context?.lastComponent ?? new TextClass('', 0, 0)
+  return context?.lastComponent ?? { setText() {} }
 }
 
 function safeRenderTextResult(result, options, theme, context, maxLines = 15) {
@@ -254,7 +282,7 @@ function safeRenderTextResult(result, options, theme, context, maxLines = 15) {
     text.setText(content)
     return text
   } catch {
-    const text = new Text('', 0, 0)
+    const text = TextClass ? new TextClass('', 0, 0) : { setText() {} }
     text.setText('(render error)')
     return text
   }
@@ -264,11 +292,23 @@ function safeRenderTextResult(result, options, theme, context, maxLines = 15) {
 // Extension
 // ---------------------------------------------------------------------------
 
-export default function fffExtension(pi) {
+export default async function fffExtension(pi) {
   let finder = null
   let finderCwd = null
   let finderPromise = null
   let activeCwd = process.cwd()
+
+  const { CustomEditor, Text: TextClass, Type } = await loadHostDeps()
+
+  const T = Type || {
+    Object: (props) => ({ type: 'object', properties: props }),
+    String: (meta) => ({ type: 'string', ...meta }),
+    Optional: (schema) => schema,
+    Boolean: (meta) => ({ type: 'boolean', ...meta }),
+    Number: (meta) => ({ type: 'number', ...meta }),
+    Union: (schemas, meta) => ({ anyOf: schemas, ...meta }),
+    Array: (schema, meta) => ({ type: 'array', items: schema, ...meta }),
+  }
 
   let currentMode =
     pi.getFlag?.('fff-mode') ??
@@ -345,10 +385,11 @@ export default function fffExtension(pi) {
     } catch { return [] }
   }
 
-  class FffEditor extends CustomEditor {
-    baseProvider = undefined
+  const FffEditor = CustomEditor
+    ? class FffEditor extends CustomEditor {
+        baseProvider = undefined
 
-    setAutocompleteProvider(provider) {
+        setAutocompleteProvider(provider) {
       this.baseProvider = provider
       const mentionProvider = createFffMentionProvider(getMentionItems)
       const compositeProvider = {
@@ -367,12 +408,13 @@ export default function fffExtension(pi) {
         },
       }
       super.setAutocompleteProvider(compositeProvider)
-    }
-  }
+        }
+      }
+    : null
 
   function applyEditorMode(ctx) {
     try {
-      if (!shouldEnableMentions()) {
+      if (!shouldEnableMentions() || !FffEditor) {
         ctx?.ui?.setEditorComponent?.(undefined)
       } else {
         ctx?.ui?.setEditorComponent?.(
@@ -404,14 +446,14 @@ export default function fffExtension(pi) {
 
   // --- grep tool ---
 
-  const grepSchema = Type.Object({
-    pattern: Type.String({ description: 'Search pattern (literal text or regex)' }),
-    path: Type.Optional(Type.String({ description: 'Repo-relative path constraint.' })),
-    exclude: Type.Optional(Type.Union([Type.String(), Type.Array(Type.String())], { description: 'Exclude paths.' })),
-    caseSensitive: Type.Optional(Type.Boolean({ description: 'Force case-sensitive matching.' })),
-    context: Type.Optional(Type.Number({ description: 'Context lines before+after each match' })),
-    limit: Type.Optional(Type.Number({ description: `Max matches (default ${DEFAULT_GREP_LIMIT})` })),
-    cursor: Type.Optional(Type.String({ description: 'Pagination cursor from previous result' })),
+  const grepSchema = T.Object({
+    pattern: T.String({ description: 'Search pattern (literal text or regex)' }),
+    path: T.Optional(T.String({ description: 'Repo-relative path constraint.' })),
+    exclude: T.Optional(T.Union([T.String(), T.Array(T.String())], { description: 'Exclude paths.' })),
+    caseSensitive: T.Optional(T.Boolean({ description: 'Force case-sensitive matching.' })),
+    context: T.Optional(T.Number({ description: 'Context lines before+after each match' })),
+    limit: T.Optional(T.Number({ description: `Max matches (default ${DEFAULT_GREP_LIMIT})` })),
+    cursor: T.Optional(T.String({ description: 'Pagination cursor from previous result' })),
   })
 
   pi.registerTool({
@@ -482,7 +524,7 @@ export default function fffExtension(pi) {
         if (args?.cursor) c += (theme?.fg?.('muted', ' (page)') ?? ' (page)')
         text.setText(c)
         return text
-      } catch { const t = new Text('', 0, 0); t.setText(''); return t }
+      } catch { const t = TextClass ? new TextClass('', 0, 0) : { setText() {} }; t.setText(''); return t }
     },
 
     renderResult(result, options, theme, context) {
@@ -492,12 +534,12 @@ export default function fffExtension(pi) {
 
   // --- find tool ---
 
-  const findSchema = Type.Object({
-    pattern: Type.String({ description: 'Fuzzy filename search and glob search. Frecency-ranked, git-aware.' }),
-    path: Type.Optional(Type.String({ description: 'Repo-relative path constraint.' })),
-    exclude: Type.Optional(Type.Union([Type.String(), Type.Array(Type.String())], { description: 'Exclude paths.' })),
-    limit: Type.Optional(Type.Number({ description: `Max results per page (default ${DEFAULT_FIND_LIMIT})` })),
-    cursor: Type.Optional(Type.String({ description: 'Pagination cursor from previous result' })),
+  const findSchema = T.Object({
+    pattern: T.String({ description: 'Fuzzy filename search and glob search. Frecency-ranked, git-aware.' }),
+    path: T.Optional(T.String({ description: 'Repo-relative path constraint.' })),
+    exclude: T.Optional(T.Union([T.String(), T.Array(T.String())], { description: 'Exclude paths.' })),
+    limit: T.Optional(T.Number({ description: `Max results per page (default ${DEFAULT_FIND_LIMIT})` })),
+    cursor: T.Optional(T.String({ description: 'Pagination cursor from previous result' })),
   })
 
   pi.registerTool({
@@ -555,7 +597,7 @@ export default function fffExtension(pi) {
         if (args?.cursor) c += (theme?.fg?.('muted', ' (page)') ?? ' (page)')
         text.setText(c)
         return text
-      } catch { const t = new Text('', 0, 0); t.setText(''); return t }
+      } catch { const t = TextClass ? new TextClass('', 0, 0) : { setText() {} }; t.setText(''); return t }
     },
 
     renderResult(result, options, theme, context) {
@@ -568,12 +610,12 @@ export default function fffExtension(pi) {
 
   if (enableMultiGrep) {
     try {
-      const multiGrepSchema = Type.Object({
-        patterns: Type.Array(Type.String(), { description: 'Literal patterns (OR).' }),
-        constraints: Type.Optional(Type.String({ description: "File filter, e.g. '*.{ts,tsx} !test/'" })),
-        context: Type.Optional(Type.Number({ description: 'Context lines before+after' })),
-        limit: Type.Optional(Type.Number({ description: `Max matches (default ${DEFAULT_GREP_LIMIT})` })),
-        cursor: Type.Optional(Type.String({ description: 'Pagination cursor' })),
+      const multiGrepSchema = T.Object({
+        patterns: T.Array(T.String(), { description: 'Literal patterns (OR).' }),
+        constraints: T.Optional(T.String({ description: "File filter, e.g. '*.{ts,tsx} !test/'" })),
+        context: T.Optional(T.Number({ description: 'Context lines before+after' })),
+        limit: T.Optional(T.Number({ description: `Max matches (default ${DEFAULT_GREP_LIMIT})` })),
+        cursor: T.Optional(T.String({ description: 'Pagination cursor' })),
       })
 
       pi.registerTool({
@@ -619,7 +661,7 @@ export default function fffExtension(pi) {
             if (args?.cursor) c += (theme?.fg?.('muted', ' (page)') ?? ' (page)')
             text.setText(c)
             return text
-          } catch { const t = new Text('', 0, 0); t.setText(''); return t }
+          } catch { const t = TextClass ? new TextClass('', 0, 0) : { setText() {} }; t.setText(''); return t }
         },
 
         renderResult(result, options, theme, context) {

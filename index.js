@@ -5,7 +5,7 @@ ensureBundledExtensionPath(import.meta.url)
 
 const registeredPluginApis = new WeakSet()
 
-export default function (pi) {
+export default async function (pi) {
   if (registeredPluginApis.has(pi)) return
-  fffExtension(pi)
+  await fffExtension(pi)
 }
