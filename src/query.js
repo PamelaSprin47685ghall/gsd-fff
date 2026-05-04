@@ -8,9 +8,7 @@ export function normalizePathConstraint(pathConstraint, cwd = process.cwd()) {
     const relative = path.relative(cwd, trimmed).replaceAll(path.sep, "/");
     if (relative === "") return null;
     if (relative.startsWith("../") || relative === ".." || path.isAbsolute(relative)) {
-      throw new Error(
-        `Path constraint must be relative to the workspace: ${pathConstraint}`,
-      );
+      return null;
     }
     trimmed = relative;
   }
