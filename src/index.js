@@ -8,8 +8,29 @@
 import { CustomEditor } from '@gsd/pi-coding-agent'
 import { Text } from '@gsd/pi-tui'
 import { Type } from '@sinclair/typebox'
-import { FileFinder } from '@ff-labs/fff-node'
 import { buildQuery } from './query.js'
+
+// ---------------------------------------------------------------------------
+// Module-level fff-node lazy loader
+// ---------------------------------------------------------------------------
+
+let _fffNodeModule = null
+let _fffNodeLoadError = null
+
+async function ensureFffNodeModule() {
+  if (_fffNodeModule) return _fffNodeModule
+  if (_fffNodeLoadError) throw _fffNodeLoadError
+  try {
+    _fffNodeModule = await import('@ff-labs/fff-node')
+    return _fffNodeModule
+  } catch (err) {
+    _fffNodeLoadError = new Error(
+      'Missing dependency: @ff-labs/fff-node. Run `npm install` in the gsd-fff directory.',
+      { cause: err },
+    )
+    throw _fffNodeLoadError
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -248,7 +269,7 @@ export default function fffExtension(pi) {
         finderCwd = null
       }
 
-      const result = FileFinder.create({
+      const result = (await ensureFffNodeModule()).FileFinder.create({
         basePath: cwd,
         frecencyDbPath,
         historyDbPath,
