@@ -52,11 +52,16 @@ export function buildQuery(
   pattern,
   exclude,
   cwd = process.cwd(),
+  allowExternal = false,
 ) {
   const parts = [];
   if (fpath) {
-    const pathConstraint = normalizePathConstraint(fpath, cwd);
-    if (pathConstraint) parts.push(pathConstraint);
+    if (allowExternal && path.isAbsolute(fpath)) {
+      parts.push(fpath);
+    } else {
+      const pathConstraint = normalizePathConstraint(fpath, cwd);
+      if (pathConstraint) parts.push(pathConstraint);
+    }
   }
   parts.push(...normalizeExcludes(exclude, cwd));
   parts.push(pattern);

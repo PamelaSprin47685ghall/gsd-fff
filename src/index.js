@@ -445,11 +445,32 @@ export default async function fffExtension(pi) {
     destroyFinder()
   })
 
+  // --- bash interceptor hook ---
+  // When the LLM tries to use bash for grep/find, prepend a warning to the
+  // output while still letting the command run. The warning reminds the LLM
+  // to use the dedicated grep/find tools instead of shell commands.
+
+  const GREP_CMDS = /^\s*(?:grep|rg|ripgrep|ag|ack)\s+/
+  const FIND_CMDS  = /^\s*(?:find|fd|locate)\s+/
+
+  pi.on?.('bash_transform', (_event) => {
+    const cmd = _event.command.trim()
+    const tool = GREP_CMDS.test(cmd) ? 'grep' : FIND_CMDS.test(cmd) ? 'find' : null
+    if (!tool) return
+
+    return {
+      command: [
+        `echo "WARNING: Use the ${tool} tool for ${tool === 'grep' ? 'searching file contents' : 'locating files'} instead of bash commands. Last warning."`,
+        cmd,
+      ].join(' && '),
+    }
+  })
+
   // --- grep tool ---
 
   const grepSchema = T.Object({
     pattern: T.String({ description: 'Search pattern (literal text or regex)' }),
-    path: T.Optional(T.String({ description: 'Repo-relative path constraint.' })),
+    path: T.Optional(T.String({ description: 'Path constraint (repo-relative or absolute path outside workspace).' })),
     exclude: T.Optional(T.Union([T.String(), T.Array(T.String())], { description: 'Exclude paths.' })),
     caseSensitive: T.Optional(T.Boolean({ description: 'Force case-sensitive matching.' })),
     context: T.Optional(T.Number({ description: 'Context lines before+after each match' })),
@@ -473,9 +494,45 @@ export default async function fffExtension(pi) {
     async execute(_toolCallId, params, signal) {
       try {
         if (signal?.aborted) return { content: [{ type: 'text', text: '(aborted)' }], details: {} }
-        const f = await ensureFinder(activeCwd)
+
+        // Detect external (outside workspace) absolute paths and use a
+        // temporary finder scoped to that directory instead of the workspace
+        // finder. The temporary finder is destroyed in `finally` below.
+        let externalFinder = null
+        let externalBasePath = null
+        let externalPathConstraint = null
+        if (params.path && path.isAbsolute(params.path)) {
+          const resolved = path.resolve(params.path)
+          try {
+            const stat = await import('node:fs').then(m => m.promises.stat(resolved))
+            if (stat.isDirectory()) {
+              externalBasePath = resolved
+            } else if (stat.isFile()) {
+              externalBasePath = path.dirname(resolved)
+              externalPathConstraint = path.basename(resolved)
+            }
+          } catch {
+            // stat failed — not an existing path, fall through to normal flow
+          }
+        }
+
+        const f = externalBasePath
+          ? await (async () => {
+              const mod = await ensureFffNodeModule()
+              const result = mod.FileFinder.create({
+                basePath: externalBasePath,
+                frecencyDbPath: undefined,
+                historyDbPath: undefined,
+                aiMode: true,
+              })
+              if (!result.ok) throw new Error(`Failed to create FFF file finder: ${result.error}`)
+              externalFinder = result.value
+              try { await externalFinder.waitForScan(15000) } catch { /* scan timeout is non-fatal */ }
+              return externalFinder
+            })()
+          : await ensureFinder(activeCwd)
         const effectiveLimit = Math.max(1, params.limit ?? DEFAULT_GREP_LIMIT)
-        const query = buildQuery(params.path, params.pattern, params.exclude, activeCwd)
+        const query = buildQuery(externalPathConstraint ?? params.path, params.pattern, params.exclude, externalBasePath ?? activeCwd, !!externalBasePath)
         const hasRegexSyntax = params.pattern !== params.pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
         let mode = hasRegexSyntax ? 'regex' : 'plain'
         if (mode === 'regex') { try { new RegExp(params.pattern) } catch { mode = 'plain' } }
@@ -512,6 +569,10 @@ export default async function fffExtension(pi) {
         return { content: [{ type: 'text', text: output }], details: { totalMatched: result?.totalMatched ?? 0, totalFiles: result?.totalFiles ?? 0 } }
       } catch (err) {
         return { content: [{ type: 'text', text: `FFfgrep error: ${err instanceof Error ? err.message : String(err)}` }], details: {} }
+      } finally {
+        if (externalFinder) {
+          try { externalFinder.destroy() } catch { /* cleanup best-effort */ }
+        }
       }
     },
 
@@ -537,7 +598,7 @@ export default async function fffExtension(pi) {
 
   const findSchema = T.Object({
     pattern: T.String({ description: 'Fuzzy filename search and glob search. Frecency-ranked, git-aware.' }),
-    path: T.Optional(T.String({ description: 'Repo-relative path constraint.' })),
+    path: T.Optional(T.String({ description: 'Path constraint (repo-relative or absolute path outside workspace).' })),
     exclude: T.Optional(T.Union([T.String(), T.Array(T.String())], { description: 'Exclude paths.' })),
     limit: T.Optional(T.Number({ description: `Max results per page (default ${DEFAULT_FIND_LIMIT})` })),
     cursor: T.Optional(T.String({ description: 'Pagination cursor from previous result' })),
@@ -561,10 +622,44 @@ export default async function fffExtension(pi) {
     async execute(_toolCallId, params, signal) {
       try {
         if (signal?.aborted) return { content: [{ type: 'text', text: '(aborted)' }], details: {} }
-        const f = await ensureFinder(activeCwd)
+
+        // External path support (same pattern as grep)
+        let externalFinder = null
+        let externalBasePath = null
+        let externalPathConstraint = null
+        if (params.path && path.isAbsolute(params.path)) {
+          const resolved = path.resolve(params.path)
+          try {
+            const stat = await import('node:fs').then(m => m.promises.stat(resolved))
+            if (stat.isDirectory()) {
+              externalBasePath = resolved
+            } else if (stat.isFile()) {
+              externalBasePath = path.dirname(resolved)
+              externalPathConstraint = path.basename(resolved)
+            }
+          } catch {
+            // stat failed — not an existing path, fall through to normal flow
+          }
+        }
+
+        const f = externalBasePath
+          ? await (async () => {
+              const mod = await ensureFffNodeModule()
+              const result = mod.FileFinder.create({
+                basePath: externalBasePath,
+                frecencyDbPath: undefined,
+                historyDbPath: undefined,
+                aiMode: true,
+              })
+              if (!result.ok) throw new Error(`Failed to create FFF file finder: ${result.error}`)
+              externalFinder = result.value
+              try { await externalFinder.waitForScan(15000) } catch { /* scan timeout is non-fatal */ }
+              return externalFinder
+            })()
+          : await ensureFinder(activeCwd)
         const resumed = params.cursor ? getFindCursor(params.cursor) : undefined
         const effectiveLimit = resumed ? resumed.pageSize : Math.max(1, params.limit ?? DEFAULT_FIND_LIMIT)
-        const query = resumed ? resumed.query : buildQuery(params.path, params.pattern, params.exclude, activeCwd)
+        const query = resumed ? resumed.query : buildQuery(externalPathConstraint ?? params.path, params.pattern, params.exclude, externalBasePath ?? activeCwd, !!externalBasePath)
         const pattern = resumed ? resumed.pattern : params.pattern
         const pageIndex = resumed?.nextPageIndex ?? 0
         const searchResult = f.fileSearch(query, { pageIndex, pageSize: effectiveLimit })
@@ -585,6 +680,10 @@ export default async function fffExtension(pi) {
         return { content: [{ type: 'text', text: output }], details: { totalMatched: result?.totalMatched ?? 0, totalFiles: result?.totalFiles ?? 0, pageIndex, hasMore } }
       } catch (err) {
         return { content: [{ type: 'text', text: `FFfind error: ${err instanceof Error ? err.message : String(err)}` }], details: {} }
+      } finally {
+        if (externalFinder) {
+          try { externalFinder.destroy() } catch { /* cleanup best-effort */ }
+        }
       }
     },
 
