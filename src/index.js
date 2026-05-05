@@ -10,6 +10,7 @@
  */
 
 import { buildQuery } from './query.js'
+import path from 'node:path'
 
 // ---------------------------------------------------------------------------
 // Lazy-loaded host dependencies — static imports would crash when packages
@@ -492,13 +493,13 @@ export default async function fffExtension(pi) {
     parameters: grepSchema,
 
     async execute(_toolCallId, params, signal) {
+      let externalFinder = null
       try {
         if (signal?.aborted) return { content: [{ type: 'text', text: '(aborted)' }], details: {} }
 
         // Detect external (outside workspace) absolute paths and use a
         // temporary finder scoped to that directory instead of the workspace
         // finder. The temporary finder is destroyed in `finally` below.
-        let externalFinder = null
         let externalBasePath = null
         let externalPathConstraint = null
         if (params.path && path.isAbsolute(params.path)) {
@@ -620,11 +621,11 @@ export default async function fffExtension(pi) {
     parameters: findSchema,
 
     async execute(_toolCallId, params, signal) {
+      let externalFinder = null
       try {
         if (signal?.aborted) return { content: [{ type: 'text', text: '(aborted)' }], details: {} }
 
         // External path support (same pattern as grep)
-        let externalFinder = null
         let externalBasePath = null
         let externalPathConstraint = null
         if (params.path && path.isAbsolute(params.path)) {
